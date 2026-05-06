@@ -42,15 +42,22 @@ class MedGemmaService:
         try:
             import torch
             from huggingface_hub import login
-            from transformers import pipeline
+            from transformers import BitsAndBytesConfig, pipeline
 
             login(token=self.token, add_to_git_credential=False)
 
             if torch.cuda.is_available():
                 dtype = torch.bfloat16
                 print("[MEDGEMMA] CUDA available:", torch.cuda.get_device_name(0))
+                quantization_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=dtype,
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4",
+                )
             else:
                 dtype = torch.float32
+                quantization_config = None
                 print("[MEDGEMMA] CUDA not available.")
 
             print(f"[MEDGEMMA] Loading model: {self.model_id}")
@@ -62,7 +69,7 @@ class MedGemmaService:
                 device_map="auto",
                 model_kwargs={
                     "torch_dtype": dtype,
-                    "load_in_4bit": True,
+                    "quantization_config": quantization_config,
                 },
             )
 
