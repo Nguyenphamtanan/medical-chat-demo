@@ -159,7 +159,7 @@ class MedGemmaService:
 
             outputs = self.pipe(
                 messages,
-                max_new_tokens=256,
+                max_new_tokens=512,
                 do_sample=False,
             )
 
@@ -188,4 +188,62 @@ class MedGemmaService:
                 "error": err,
                 "text": "",
                 "status": "real_medgemma_call_failed",
+            }
+        
+    def repair_json(self, prompt: str) -> Dict[str, str]:
+        self._load_model()
+
+        if self.pipe is None:
+            return {
+                "error": "MedGemma is not loaded",
+                "text": "",
+                "status": self.status,
+            }
+
+        try:
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": prompt,
+                        }
+                    ],
+                }
+            ]
+
+            print("[MEDGEMMA] Repairing non-JSON output into JSON...")
+
+            outputs = self.pipe(
+                messages,
+                max_new_tokens=512,
+                do_sample=False,
+            )
+
+            text = self._extract_text(outputs)
+
+            print("========== RAW MEDGEMMA REPAIR OUTPUT ==========")
+            print(text)
+            print("================================================")
+
+            if not text:
+                return {
+                    "error": "Empty MedGemma repair output",
+                    "text": "",
+                    "status": "empty_medgemma_repair_output",
+                }
+
+            return {
+                "text": text,
+                "status": "real_medgemma_repair_response",
+            }
+
+        except Exception as exc:
+            err = f"{type(exc).__name__}: {exc}"
+            print("[MEDGEMMA] Repair call failed:", err)
+            return {
+                "error": err,
+                "text": "",
+                "status": "real_medgemma_repair_failed",
             }
