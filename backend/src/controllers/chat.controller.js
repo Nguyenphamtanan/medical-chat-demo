@@ -115,7 +115,7 @@ export const askMedicalAgent = async (req, res) => {
       const aiResult = await axios.post(
         `${aiConfig.url}/ai/analyze`,
         { symptoms: trimmedSymptoms },
-        { timeout: 120000 }
+        { timeout: 600000 }
       );
 
       aiResponse = normalizeMedicalResponse(

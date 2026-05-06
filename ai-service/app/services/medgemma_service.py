@@ -141,7 +141,7 @@ class MedGemmaService:
             print("[MEDGEMMA] Calling real model...")
             outputs = self.pipe(
                 messages,
-                max_new_tokens=512,
+                max_new_tokens=384,
                 do_sample=False,
             )
 

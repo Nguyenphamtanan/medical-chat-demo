@@ -5,7 +5,7 @@ from .parser_service import (
     extract_json,
     normalize_medical_response,
 )
-from .prompt_service import build_json_repair_prompt, build_prompt
+from .prompt_service import build_prompt
 
 
 class MedicalOrchestrator:
@@ -24,6 +24,7 @@ class MedicalOrchestrator:
         prompt = build_prompt(clean_symptoms)
         raw = self.med.generate(prompt)
 
+        # MedGemma disabled/load failed/call failed.
         if "error" in raw:
             return build_stub_response(
                 clean_symptoms,
@@ -33,6 +34,7 @@ class MedicalOrchestrator:
         text = raw.get("text", "")
         parsed = extract_json(text)
 
+        # MedGemma returned valid JSON.
         if parsed:
             result = normalize_medical_response(
                 parsed,
@@ -41,21 +43,9 @@ class MedicalOrchestrator:
             result["model_status"] = "medgemma_real_json"
             return result
 
-        repair_prompt = build_json_repair_prompt(clean_symptoms, text)
-        repaired_raw = self.med.repair_json(repair_prompt)
-
-        if "error" not in repaired_raw:
-            repaired_text = repaired_raw.get("text", "")
-            repaired_parsed = extract_json(repaired_text)
-
-            if repaired_parsed:
-                result = normalize_medical_response(
-                    repaired_parsed,
-                    repaired_raw.get("status", "real_medgemma_repair_response"),
-                )
-                result["model_status"] = "medgemma_real_repaired_json"
-                return result
-
+        # MedGemma ran but returned non-JSON/thought.
+        # Do NOT call repair_json here because it is too slow for web requests
+        # and causes backend/frontend timeout on Colab T4.
         return build_non_json_medgemma_response(
             clean_symptoms,
             text,
