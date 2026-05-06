@@ -1,4 +1,5 @@
 import os
+from typing import Any, Dict
 
 from dotenv import load_dotenv
 
@@ -13,12 +14,25 @@ class MedGemmaService:
         self.pipe = None
         self.status = "disabled_stub_mode"
 
+    def _refresh_env(self):
+        """
+        Refresh env values because in Colab we often set os.environ after this
+        service object has already been imported. Humanity discovered mutable
+        runtime state and decided this was acceptable.
+        """
+        self.model_id = os.getenv("MEDGEMMA_MODEL_ID", self.model_id)
+        self.token = os.getenv("HF_TOKEN", "").strip()
+        self.use_medgemma = os.getenv("USE_MEDGEMMA", "false").lower() == "true"
+
     def _load_model(self):
+        self._refresh_env()
+
         if not self.use_medgemma:
             self.status = "disabled_stub_mode"
             return
 
         if self.pipe is not None:
+            self.status = "loaded_successfully"
             return
 
         if not self.token:
@@ -32,8 +46,16 @@ class MedGemmaService:
 
             login(token=self.token, add_to_git_credential=False)
 
-            device = 0 if torch.cuda.is_available() else -1
-            dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+            if torch.cuda.is_available():
+                device = 0
+                dtype = torch.bfloat16
+                print("[MEDGEMMA] CUDA available:", torch.cuda.get_device_name(0))
+            else:
+                device = -1
+                dtype = torch.float32
+                print("[MEDGEMMA] CUDA not available. This will be slow.")
+
+            print(f"[MEDGEMMA] Loading model: {self.model_id}")
 
             self.pipe = pipeline(
                 "image-text-to-text",
@@ -44,15 +66,71 @@ class MedGemmaService:
             )
 
             self.status = "loaded_successfully"
-        except Exception as exc:
-            self.status = f"load_failed: {type(exc).__name__}: {exc}"
+            print("[MEDGEMMA] Model loaded successfully.")
 
-    def generate(self, prompt: str):
+        except Exception as exc:
+            self.pipe = None
+            self.status = f"load_failed: {type(exc).__name__}: {exc}"
+            print("[MEDGEMMA] Load failed:", self.status)
+
+    def _extract_text(self, outputs: Any) -> str:
+        """
+        MedGemma pipeline may return different shapes depending on transformers
+        version. Extract the assistant content as defensively as possible,
+        because apparently returning one stable shape was too generous.
+        """
+        if outputs is None:
+            return ""
+
+        if isinstance(outputs, list) and outputs:
+            first = outputs[0]
+
+            if isinstance(first, dict):
+                generated = first.get("generated_text", "")
+
+                if isinstance(generated, str):
+                    return generated.strip()
+
+                if isinstance(generated, list) and generated:
+                    # Usually:
+                    # [
+                    #   {"role": "user", "content": [...]},
+                    #   {"role": "assistant", "content": "..."}
+                    # ]
+                    last = generated[-1]
+
+                    if isinstance(last, dict):
+                        content = last.get("content", "")
+
+                        if isinstance(content, str):
+                            return content.strip()
+
+                        if isinstance(content, list):
+                            chunks = []
+                            for item in content:
+                                if isinstance(item, dict):
+                                    chunks.append(str(item.get("text", "")))
+                                else:
+                                    chunks.append(str(item))
+                            return "\n".join([x for x in chunks if x]).strip()
+
+                        return str(content).strip()
+
+                    return str(last).strip()
+
+                return str(generated).strip()
+
+            return str(first).strip()
+
+        return str(outputs).strip()
+
+    def generate(self, prompt: str) -> Dict[str, str]:
         self._load_model()
 
         if self.pipe is None:
             return {
                 "error": "MedGemma is not loaded",
+                "text": "",
                 "status": self.status,
             }
 
@@ -69,40 +147,37 @@ class MedGemmaService:
                 }
             ]
 
+            print("[MEDGEMMA] Calling real model...")
+
             outputs = self.pipe(
                 messages,
                 max_new_tokens=512,
                 do_sample=False,
             )
 
-            if isinstance(outputs, list) and outputs:
-                generated = outputs[0].get("generated_text", "")
+            text = self._extract_text(outputs)
 
-                if isinstance(generated, list) and generated:
-                    last = generated[-1]
-                    if isinstance(last, dict):
-                        return {
-                            "text": last.get("content", ""),
-                            "status": "real_medgemma_response",
-                        }
+            print("========== RAW MEDGEMMA OUTPUT ==========")
+            print(text)
+            print("=========================================")
 
-                if isinstance(generated, str):
-                    return {
-                        "text": generated,
-                        "status": "real_medgemma_response",
-                    }
-
+            if not text:
                 return {
-                    "text": str(generated),
-                    "status": "real_medgemma_response",
+                    "error": "Empty MedGemma output",
+                    "text": "",
+                    "status": "empty_medgemma_output",
                 }
 
             return {
-                "error": "Empty MedGemma output",
-                "status": "empty_medgemma_output",
+                "text": text,
+                "status": "real_medgemma_response",
             }
+
         except Exception as exc:
+            err = f"{type(exc).__name__}: {exc}"
+            print("[MEDGEMMA] Real call failed:", err)
             return {
-                "error": f"{type(exc).__name__}: {exc}",
+                "error": err,
+                "text": "",
                 "status": "real_medgemma_call_failed",
             }
