@@ -47,13 +47,11 @@ class MedGemmaService:
             login(token=self.token, add_to_git_credential=False)
 
             if torch.cuda.is_available():
-                device = 0
                 dtype = torch.bfloat16
                 print("[MEDGEMMA] CUDA available:", torch.cuda.get_device_name(0))
             else:
-                device = -1
                 dtype = torch.float32
-                print("[MEDGEMMA] CUDA not available. This will be slow.")
+                print("[MEDGEMMA] CUDA not available.")
 
             print(f"[MEDGEMMA] Loading model: {self.model_id}")
 
@@ -61,8 +59,11 @@ class MedGemmaService:
                 "image-text-to-text",
                 model=self.model_id,
                 token=self.token,
-                device=device,
-                torch_dtype=dtype,
+                device_map="auto",
+                model_kwargs={
+                    "torch_dtype": dtype,
+                    "load_in_4bit": True,
+                },
             )
 
             self.status = "loaded_successfully"
@@ -151,7 +152,7 @@ class MedGemmaService:
 
             outputs = self.pipe(
                 messages,
-                max_new_tokens=512,
+                max_new_tokens=256,
                 do_sample=False,
             )
 
