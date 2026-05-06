@@ -159,7 +159,7 @@ class MedGemmaService:
 
             outputs = self.pipe(
                 messages,
-                max_new_tokens=512,
+                max_new_tokens=384,
                 do_sample=False,
             )
 
@@ -217,7 +217,7 @@ class MedGemmaService:
 
             outputs = self.pipe(
                 messages,
-                max_new_tokens=512,
+                max_new_tokens=384,
                 do_sample=False,
             )
 
