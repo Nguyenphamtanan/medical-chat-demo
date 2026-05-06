@@ -5,6 +5,30 @@ from typing import Any, Dict, List, Optional
 
 DISCLAIMER = "Thông tin chỉ mang tính tham khảo, không thay thế bác sĩ."
 
+ALLOWED_SEVERITIES = {
+    "low",
+    "low_to_moderate",
+    "moderate",
+    "high",
+    "emergency",
+    "unknown",
+}
+
+PLACEHOLDER_PHRASES = [
+    "Tóm tắt ngắn triệu chứng và hướng liên quan",
+    "hệ/cơ quan có thể liên quan",
+    "khả năng giải thích phù hợp",
+    "dấu hiệu nguy hiểm cần đi khám/cấp cứu",
+    "câu hỏi cần hỏi thêm",
+    "Khuyến nghị an toàn, không kê thuốc",
+    "Nội dung cụ thể",
+    "Viết tóm tắt cụ thể dựa trên triệu chứng người dùng",
+    "Liệt kê hệ/cơ quan cụ thể",
+    "Liệt kê khả năng giải thích cụ thể",
+    "Liệt kê dấu hiệu nguy hiểm cụ thể",
+    "Liệt kê câu hỏi cụ thể",
+    "Viết khuyến nghị an toàn cụ thể",
+]
 
 DEFAULT_RESPONSE = {
     "summary": "",
@@ -19,6 +43,15 @@ DEFAULT_RESPONSE = {
 }
 
 
+def _lower(text: str) -> str:
+    return str(text or "").strip().lower()
+
+
+def _contains_any(text: str, words: List[str]) -> bool:
+    lowered = _lower(text)
+    return any(word in lowered for word in words)
+
+
 def _as_list(value: Any) -> List[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
@@ -29,61 +62,141 @@ def _as_list(value: Any) -> List[str]:
     return []
 
 
-def _lower(text: str) -> str:
-    return (text or "").strip().lower()
-
-
-def _strip_thought_blocks(text: str) -> str:
+def _strip_markdown_and_thought(text: str) -> str:
     cleaned = str(text or "").strip()
-
     cleaned = re.sub(r"<unused\d+>\s*thought", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"<unused\d+>", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"(?i)^thought\s*", "", cleaned).strip()
+    cleaned = re.sub(r"(?is)<thought>.*?</thought>", "", cleaned)
+    cleaned = re.sub(r"(?im)^\s*(thought|analysis)\s*:\s*", "", cleaned)
+    cleaned = re.sub(r"(?im)^\s*```(?:json)?\s*", "", cleaned)
+    cleaned = re.sub(r"(?im)\s*```\s*$", "", cleaned)
+    return cleaned.strip()
 
-    return cleaned
+
+def _extract_balanced_json_objects(text: str) -> List[str]:
+    candidates = []
+    start = None
+    depth = 0
+    in_string = False
+    escaped = False
+
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+            continue
+
+        if char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}" and depth:
+            depth -= 1
+            if depth == 0 and start is not None:
+                candidates.append(text[start : index + 1])
+                start = None
+
+    return candidates
+
+
+def is_placeholder_response(data: Dict[str, Any]) -> bool:
+    if not isinstance(data, dict):
+        return True
+
+    required_keys = [
+        "summary",
+        "possible_related_systems",
+        "possible_explanations",
+        "red_flags",
+        "missing_questions",
+        "recommendation",
+    ]
+
+    for key in required_keys:
+        value = data.get(key)
+
+        if isinstance(value, str):
+            values = [value]
+        elif isinstance(value, list):
+            values = [str(item) for item in value]
+        else:
+            values = []
+
+        if not values or not any(item.strip() for item in values):
+            return True
+
+        joined = " ".join(values)
+        if any(phrase.lower() in joined.lower() for phrase in PLACEHOLDER_PHRASES):
+            return True
+
+    return False
 
 
 def detect_symptom_profile(symptoms: str) -> Dict[str, Any]:
-    s = _lower(symptoms)
+    text = _lower(symptoms)
 
-    if any(x in s for x in ["vàng da", "vàng mắt", "mắt vàng", "nước tiểu sẫm", "phân bạc màu"]):
+    if _contains_any(
+        text,
+        [
+            "vàng da",
+            "vang da",
+            "vàng mắt",
+            "vang mat",
+            "mắt vàng",
+            "mat vang",
+            "nước tiểu sẫm",
+            "nuoc tieu sam",
+            "nước tiểu đậm",
+            "phân bạc màu",
+            "phan bac mau",
+            "bilirubin",
+        ],
+    ):
         return {
             "summary": (
-                f"Bạn mô tả có dấu hiệu vàng da/vàng mắt: {symptoms}. "
-                "Đây là triệu chứng cần được đánh giá sớm vì có thể liên quan đến gan, mật hoặc đường mật."
+                f"Bạn mô tả triệu chứng vàng da hoặc vàng mắt: {symptoms}. "
+                "Triệu chứng này thường cần đánh giá sớm vì có thể liên quan đến tăng bilirubin, gan, túi mật hoặc đường mật."
             ),
-            "possible_related_systems": ["gan", "mật", "đường mật", "tiêu hóa"],
+            "possible_related_systems": ["gan", "mật", "đường mật", "máu", "tiêu hóa"],
             "possible_explanations": [
-                "Vàng da có thể liên quan đến tăng bilirubin do vấn đề ở gan, túi mật hoặc đường mật.",
-                "Một số nguyên nhân có thể gồm viêm gan, tắc mật, sỏi mật, tác dụng phụ thuốc hoặc bệnh lý gan mật khác.",
-                "Cũng cần phân biệt với vàng da do chế độ ăn nhiều beta-carotene, nhưng thường không làm vàng mắt.",
+                "Tăng bilirubin do vấn đề ở gan, túi mật hoặc đường mật.",
+                "Tắc mật hoặc sỏi mật có thể gây vàng da, nước tiểu sẫm màu và phân bạc màu.",
+                "Viêm gan, tổn thương gan do rượu, thuốc, thực phẩm chức năng hoặc nhiễm virus cũng cần được loại trừ.",
+                "Một số rối loạn máu gây tan máu cũng có thể làm bilirubin tăng.",
             ],
             "red_flags": [
-                "Vàng da kèm sốt, đau bụng vùng hạ sườn phải, rét run hoặc nôn nhiều.",
-                "Nước tiểu sẫm màu, phân bạc màu, ngứa nhiều, mệt lả hoặc vàng da tăng nhanh.",
-                "Lơ mơ, chảy máu bất thường, đau bụng dữ dội hoặc tình trạng xấu đi nhanh.",
+                "Vàng da kèm sốt, rét run hoặc đau vùng hạ sườn phải.",
+                "Nước tiểu sẫm màu, phân bạc màu, ngứa nhiều hoặc vàng da tăng nhanh.",
+                "Lơ mơ, nôn nhiều, đau bụng dữ dội, chảy máu bất thường hoặc mệt lả.",
             ],
             "missing_questions": [
-                "Bạn bị vàng da từ khi nào?",
-                "Mắt có vàng không, nước tiểu có sẫm màu không, phân có bạc màu không?",
-                "Có đau bụng vùng hạ sườn phải, sốt, buồn nôn, ngứa da hoặc mệt nhiều không?",
+                "Bạn bị vàng da từ khi nào và có vàng mắt không?",
+                "Nước tiểu có sẫm màu hoặc phân có bạc màu không?",
+                "Có đau bụng vùng hạ sườn phải, sốt, ngứa da, buồn nôn hoặc mệt nhiều không?",
                 "Gần đây có uống rượu, dùng thuốc mới, thực phẩm chức năng hoặc từng mắc viêm gan không?",
             ],
             "recommendation": (
                 "Bạn nên đi khám sớm để được xét nghiệm bilirubin, men gan và đánh giá gan mật. "
-                "Nếu có sốt, đau bụng nhiều, lơ mơ, nôn nhiều, nước tiểu rất sẫm hoặc vàng da tăng nhanh "
-                "thì cần đi khám/cấp cứu ngay."
+                "Nếu có sốt, đau bụng nhiều, lơ mơ, nôn nhiều, nước tiểu rất sẫm, phân bạc màu hoặc vàng da tăng nhanh thì cần đi khám/cấp cứu ngay."
             ),
             "severity": "moderate",
         }
 
-    if any(x in s for x in ["khó thở", "thở gấp", "tím môi", "đau ngực"]):
+    if _contains_any(text, ["khó thở", "kho tho", "tím môi", "tim moi", "đau ngực", "dau nguc", "thở gấp"]):
         return {
-            "summary": f"Bạn mô tả triệu chứng có thể liên quan hô hấp hoặc tim mạch: {symptoms}.",
+            "summary": f"Bạn mô tả triệu chứng có thể liên quan đến hô hấp hoặc tim mạch: {symptoms}.",
             "possible_related_systems": ["hô hấp", "tim mạch"],
             "possible_explanations": [
                 "Khó thở hoặc đau ngực có thể liên quan đến nhiễm trùng hô hấp, hen, vấn đề tim mạch hoặc nguyên nhân khác.",
-                "Cần hỏi thêm mức độ, thời gian xuất hiện và triệu chứng đi kèm để phân loại nguy cơ.",
+                "Cần hỏi thêm mức độ, thời điểm xuất hiện và triệu chứng đi kèm để phân loại nguy cơ.",
             ],
             "red_flags": [
                 "Khó thở nặng, tím môi, đau ngực dữ dội, ngất hoặc lú lẫn.",
@@ -101,13 +214,13 @@ def detect_symptom_profile(symptoms: str) -> Dict[str, Any]:
             "severity": "high",
         }
 
-    if any(x in s for x in ["sốt", "ho", "đau họng", "sổ mũi", "nghẹt mũi"]):
+    if _contains_any(text, ["sốt", "sot", "ho", "đau họng", "dau hong", "sổ mũi", "nghẹt mũi"]):
         return {
-            "summary": f"Bạn mô tả triệu chứng giống nhiễm trùng hô hấp hoặc tai mũi họng: {symptoms}.",
+            "summary": f"Bạn mô tả triệu chứng gợi ý vấn đề hô hấp hoặc tai mũi họng: {symptoms}.",
             "possible_related_systems": ["hô hấp", "tai mũi họng", "toàn thân"],
             "possible_explanations": [
-                "Sốt, ho, đau họng có thể gặp trong cảm lạnh, cúm, viêm họng, COVID-19 hoặc nhiễm trùng hô hấp khác.",
-                "Cần hỏi thêm sốt bao nhiêu độ, thời gian kéo dài và có khó thở hay không.",
+                "Cảm lạnh, cúm, COVID-19, viêm họng hoặc nhiễm trùng hô hấp trên có thể gây các triệu chứng này.",
+                "Cần biết nhiệt độ sốt, thời gian kéo dài và có khó thở hay đau ngực không.",
             ],
             "red_flags": [
                 "Khó thở, đau ngực, tím môi, lơ mơ hoặc sốt cao không hạ.",
@@ -116,7 +229,7 @@ def detect_symptom_profile(symptoms: str) -> Dict[str, Any]:
             "missing_questions": [
                 "Bạn sốt bao nhiêu độ và kéo dài bao lâu?",
                 "Có khó thở, đau ngực, ho ra máu hoặc mệt lả không?",
-                "Có tiếp xúc người bệnh, test COVID/cúm chưa?",
+                "Có tiếp xúc người bệnh hoặc đã test COVID/cúm chưa?",
             ],
             "recommendation": (
                 "Theo dõi nhiệt độ, nghỉ ngơi và uống đủ nước nếu phù hợp. "
@@ -125,22 +238,22 @@ def detect_symptom_profile(symptoms: str) -> Dict[str, Any]:
             "severity": "low_to_moderate",
         }
 
-    if any(x in s for x in ["đau bụng", "buồn nôn", "nôn", "tiêu chảy", "phân đen", "nôn ra máu"]):
+    if _contains_any(text, ["đau bụng", "dau bung", "buồn nôn", "nôn", "tiêu chảy", "phân đen", "nôn ra máu"]):
         return {
-            "summary": f"Bạn mô tả triệu chứng có thể liên quan hệ tiêu hóa: {symptoms}.",
-            "possible_related_systems": ["tiêu hóa"],
+            "summary": f"Bạn mô tả triệu chứng có thể liên quan đến hệ tiêu hóa: {symptoms}.",
+            "possible_related_systems": ["tiêu hóa", "dạ dày", "ruột", "gan mật"],
             "possible_explanations": [
-                "Triệu chứng có thể liên quan rối loạn tiêu hóa, nhiễm trùng tiêu hóa, viêm dạ dày-ruột hoặc nguyên nhân khác.",
+                "Rối loạn tiêu hóa, nhiễm trùng tiêu hóa, viêm dạ dày-ruột hoặc vấn đề gan mật có thể gây khó chịu đường tiêu hóa.",
                 "Phân đen hoặc nôn ra máu là dấu hiệu cảnh báo cần đi khám khẩn.",
             ],
             "red_flags": [
-                "Đau bụng dữ dội, bụng cứng, nôn liên tục, mất nước nặng.",
+                "Đau bụng dữ dội, bụng cứng, nôn liên tục hoặc mất nước nặng.",
                 "Phân đen, nôn ra máu, sốt cao hoặc lơ mơ.",
             ],
             "missing_questions": [
                 "Đau bụng ở vị trí nào và mức độ đau ra sao?",
                 "Có sốt, nôn, tiêu chảy, phân đen hoặc nôn ra máu không?",
-                "Triệu chứng kéo dài bao lâu?",
+                "Triệu chứng kéo dài bao lâu và có liên quan bữa ăn không?",
             ],
             "recommendation": (
                 "Nếu đau bụng dữ dội, nôn liên tục, mất nước, phân đen hoặc nôn ra máu thì cần đi khám/cấp cứu. "
@@ -149,7 +262,7 @@ def detect_symptom_profile(symptoms: str) -> Dict[str, Any]:
             "severity": "low_to_moderate",
         }
 
-    if any(x in s for x in ["tiểu buốt", "tiểu rắt", "tiểu máu", "đau lưng", "tiểu ít", "phù chân"]):
+    if _contains_any(text, ["tiểu buốt", "tiểu rắt", "tiểu máu", "đau lưng", "tiểu ít", "phù chân"]):
         return {
             "summary": f"Bạn mô tả triệu chứng có thể liên quan tiết niệu hoặc thận: {symptoms}.",
             "possible_related_systems": ["thận", "tiết niệu"],
@@ -163,7 +276,7 @@ def detect_symptom_profile(symptoms: str) -> Dict[str, Any]:
             ],
             "missing_questions": [
                 "Có sốt hoặc đau hông lưng không?",
-                "Nước tiểu có máu, đục, mùi lạ hoặc tiểu rất ít không?",
+                "Nước tiểu có máu, đục, mùi lạ hoặc lượng tiểu rất ít không?",
                 "Triệu chứng kéo dài bao lâu?",
             ],
             "recommendation": (
@@ -174,23 +287,24 @@ def detect_symptom_profile(symptoms: str) -> Dict[str, Any]:
         }
 
     return {
-        "summary": f"Bạn đã mô tả: {symptoms}",
-        "possible_related_systems": ["chưa xác định"],
+        "summary": f"Bạn mô tả: {symptoms}. Cần thêm thông tin để định hướng mức độ nguy cơ và hệ cơ quan liên quan.",
+        "possible_related_systems": ["chưa xác định rõ", "toàn thân"],
         "possible_explanations": [
-            "Cần thêm thông tin để đánh giá sơ bộ.",
             "Triệu chứng có thể liên quan nhiễm trùng, viêm, mất nước, tác dụng phụ thuốc hoặc nguyên nhân khác.",
+            "Cần hỏi thêm thời gian, mức độ nặng, bệnh nền và dấu hiệu đi kèm để phân loại an toàn hơn.",
         ],
         "red_flags": [
             "Đau ngực dữ dội, khó thở nặng, ngất, lú lẫn, tím môi hoặc yếu liệt.",
-            "Sốt cao kéo dài, mất nước nặng, đau bụng dữ dội hoặc triệu chứng xấu đi nhanh.",
+            "Sốt cao kéo dài, mất nước nặng, đau bụng dữ dội, chảy máu bất thường hoặc triệu chứng xấu đi nhanh.",
         ],
         "missing_questions": [
             "Bạn bao nhiêu tuổi?",
-            "Triệu chứng kéo dài bao lâu?",
+            "Triệu chứng bắt đầu khi nào và đang nặng lên hay giảm đi?",
             "Có sốt cao, khó thở, đau ngực, nôn ói, chảy máu hoặc bệnh nền không?",
         ],
         "recommendation": (
-            "Theo dõi triệu chứng và liên hệ nhân viên y tế nếu triệu chứng kéo dài, nặng hơn hoặc có dấu hiệu cảnh báo."
+            "Theo dõi triệu chứng và liên hệ nhân viên y tế nếu triệu chứng kéo dài, nặng hơn hoặc có dấu hiệu cảnh báo. "
+            "Nếu xuất hiện dấu hiệu nguy hiểm, cần đi khám/cấp cứu ngay."
         ),
         "severity": "unknown",
     }
@@ -198,15 +312,8 @@ def detect_symptom_profile(symptoms: str) -> Dict[str, Any]:
 
 def build_stub_response(symptoms: str, model_status: str = "stub_response_no_medgemma_called") -> Dict[str, Any]:
     profile = detect_symptom_profile(symptoms)
-
     return {
-        "summary": profile["summary"],
-        "possible_related_systems": profile["possible_related_systems"],
-        "possible_explanations": profile["possible_explanations"],
-        "red_flags": profile["red_flags"],
-        "missing_questions": profile["missing_questions"],
-        "recommendation": profile["recommendation"],
-        "severity": profile["severity"],
+        **profile,
         "model_status": model_status,
         "disclaimer": DISCLAIMER,
     }
@@ -216,40 +323,28 @@ def extract_json(text: str) -> Optional[Dict[str, Any]]:
     if not text or not str(text).strip():
         return None
 
-    cleaned = _strip_thought_blocks(text)
+    cleaned = _strip_markdown_and_thought(text)
 
-    cleaned = re.sub(r"^\s*```json\s*", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"^\s*```\s*", "", cleaned)
-    cleaned = re.sub(r"\s*```\s*$", "", cleaned)
-    cleaned = cleaned.strip()
+    candidates = []
 
     try:
-        parsed = json.loads(cleaned)
-        if isinstance(parsed, dict):
-            return parsed
+        direct = json.loads(cleaned)
+        if isinstance(direct, dict):
+            candidates.append(direct)
     except Exception:
         pass
 
-    json_candidates = re.findall(r"\{[\s\S]*\}", cleaned)
-
-    for candidate in reversed(json_candidates):
+    for candidate_text in reversed(_extract_balanced_json_objects(cleaned)):
         try:
-            parsed = json.loads(candidate.strip())
+            parsed = json.loads(candidate_text)
             if isinstance(parsed, dict):
-                return parsed
+                candidates.append(parsed)
         except Exception:
             continue
 
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        candidate = cleaned[start : end + 1]
-        try:
-            parsed = json.loads(candidate)
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            pass
+    for candidate in candidates:
+        if not is_placeholder_response(candidate):
+            return candidate
 
     return None
 
@@ -274,35 +369,29 @@ def normalize_medical_response(
         normalized[key] = _as_list(normalized.get(key, []))
 
     severity = str(normalized.get("severity", "unknown")).strip().lower()
-    allowed = {"low", "low_to_moderate", "moderate", "high", "emergency", "unknown"}
-    normalized["severity"] = severity if severity in allowed else "unknown"
-
-    normalized["model_status"] = normalized.get("model_status") or model_status
-    normalized["disclaimer"] = normalized.get("disclaimer") or DISCLAIMER
+    normalized["severity"] = severity if severity in ALLOWED_SEVERITIES else "unknown"
+    normalized["summary"] = str(normalized.get("summary") or "").strip()
+    normalized["recommendation"] = str(normalized.get("recommendation") or "").strip()
+    normalized["model_status"] = str(normalized.get("model_status") or model_status).strip()
+    normalized["disclaimer"] = str(normalized.get("disclaimer") or DISCLAIMER).strip()
 
     return normalized
 
 
 def build_non_json_medgemma_response(symptoms: str, raw_text: str) -> Dict[str, Any]:
     profile = detect_symptom_profile(symptoms)
-    clean_raw = _strip_thought_blocks(raw_text or "").strip()
+    has_raw = bool(_strip_markdown_and_thought(raw_text or ""))
 
     summary = profile["summary"]
-
-    if clean_raw:
+    if has_raw:
         summary = (
-            profile["summary"]
-            + " MedGemma đã phản hồi nhưng không trả JSON hợp lệ, nên hệ thống dùng phân loại an toàn theo triệu chứng."
+            f"{summary} MedGemma đã trả nội dung nhưng chưa phải JSON hợp lệ, "
+            "nên hệ thống dùng bản phân loại an toàn theo triệu chứng."
         )
 
     return {
+        **profile,
         "summary": summary,
-        "possible_related_systems": profile["possible_related_systems"],
-        "possible_explanations": profile["possible_explanations"],
-        "red_flags": profile["red_flags"],
-        "missing_questions": profile["missing_questions"],
-        "recommendation": profile["recommendation"],
-        "severity": profile["severity"],
-        "model_status": "real_medgemma_response_json_parse_failed",
+        "model_status": "medgemma_non_json_rule_based_backup",
         "disclaimer": DISCLAIMER,
     }

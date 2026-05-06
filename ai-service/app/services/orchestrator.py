@@ -21,7 +21,6 @@ class MedicalOrchestrator:
                 "empty_symptoms",
             )
 
-        # TẦNG 1 - lần 1: gọi MedGemma thật
         prompt = build_prompt(clean_symptoms)
         raw = self.med.generate(prompt)
 
@@ -42,7 +41,6 @@ class MedicalOrchestrator:
             result["model_status"] = "medgemma_real_json"
             return result
 
-        # TẦNG 1 - lần 2: vẫn dùng MedGemma, nhưng yêu cầu convert raw output thành JSON
         repair_prompt = build_json_repair_prompt(clean_symptoms, text)
         repaired_raw = self.med.repair_json(repair_prompt)
 
@@ -58,7 +56,6 @@ class MedicalOrchestrator:
                 result["model_status"] = "medgemma_real_repaired_json"
                 return result
 
-        # TẦNG 2 - backup thật sự
         return build_non_json_medgemma_response(
             clean_symptoms,
             text,
