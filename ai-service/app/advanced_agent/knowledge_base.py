@@ -8,7 +8,7 @@ from typing import Dict, List
 from .translation import normalize_text
 
 
-TOKEN_RE = re.compile(r"[\wÃ€-á»¹]+", re.UNICODE)
+TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
 
 
 @dataclass(frozen=True)
