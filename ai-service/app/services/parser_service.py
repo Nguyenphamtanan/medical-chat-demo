@@ -380,18 +380,10 @@ def normalize_medical_response(
 
 def build_non_json_medgemma_response(symptoms: str, raw_text: str) -> Dict[str, Any]:
     profile = detect_symptom_profile(symptoms)
-    has_raw = bool(_strip_markdown_and_thought(raw_text or ""))
-
-    summary = profile["summary"]
-    if has_raw:
-        summary = (
-            f"{summary} MedGemma đã trả nội dung nhưng chưa phải JSON hợp lệ, "
-            "nên hệ thống dùng bản phân loại an toàn theo triệu chứng."
-        )
 
     return {
         **profile,
-        "summary": summary,
+        "summary": profile["summary"],
         "model_status": "medgemma_non_json_rule_based_backup",
         "disclaimer": DISCLAIMER,
     }

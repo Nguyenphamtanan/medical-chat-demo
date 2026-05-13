@@ -8,6 +8,16 @@ const RESPONSE_SECTIONS = [
   ["missing_questions", "Missing questions"],
 ];
 
+const MODEL_STATUS_LABELS = {
+  medgemma_real_json: "Phân tích bởi MedGemma",
+  medgemma_text_converted_to_json: "Phân tích bởi MedGemma + chuẩn hóa kết quả",
+  medgemma_non_json_rule_based_backup: "Kết quả đã được chuẩn hóa",
+};
+
+function getModelStatusLabel(status) {
+  return MODEL_STATUS_LABELS[status] || null;
+}
+
 function ListSection({ title, items }) {
   if (!Array.isArray(items) || items.length === 0) return null;
 
@@ -28,11 +38,13 @@ function MedicalResponse({ data }) {
     return <p>No response data returned.</p>;
   }
 
+  const modelStatusLabel = getModelStatusLabel(data.model_status);
+
   return (
     <article className="medical-response">
       <div className="response-meta">
         <span>Severity: {data.severity || "unknown"}</span>
-        <span>{data.model_status || "unknown_model_status"}</span>
+        {modelStatusLabel && <span>{modelStatusLabel}</span>}
       </div>
 
       <p className="summary">{data.summary}</p>

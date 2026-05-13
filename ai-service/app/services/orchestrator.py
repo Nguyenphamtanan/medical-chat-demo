@@ -1,11 +1,11 @@
 from .medgemma_service import MedGemmaService
 from .parser_service import (
-    build_non_json_medgemma_response,
     build_stub_response,
     extract_json,
     normalize_medical_response,
 )
 from .prompt_service import build_prompt
+from .text_to_json_service import convert_medgemma_text_to_json
 
 
 class MedicalOrchestrator:
@@ -43,10 +43,6 @@ class MedicalOrchestrator:
             result["model_status"] = "medgemma_real_json"
             return result
 
-        # MedGemma ran but returned non-JSON/thought.
-        # Do NOT call repair_json here because it is too slow for web requests
-        # and causes backend/frontend timeout on Colab T4.
-        return build_non_json_medgemma_response(
-            clean_symptoms,
-            text,
-        )
+        # MedGemma ran once but returned free text/thought instead of JSON.
+        # Convert that text locally; web requests must not call repair_json.
+        return convert_medgemma_text_to_json(clean_symptoms, text)
