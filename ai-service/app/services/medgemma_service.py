@@ -66,6 +66,7 @@ class MedGemmaService:
                     "quantization_config": quantization_config,
                 },
             )
+            self._clear_max_length_config()
 
             self.status = "loaded_successfully"
             print("[MEDGEMMA] Model loaded successfully.")
@@ -115,6 +116,18 @@ class MedGemmaService:
 
         return str(outputs).strip()
 
+    def _clear_max_length_config(self):
+        for target in [
+            getattr(self.pipe, "generation_config", None),
+            getattr(getattr(self.pipe, "model", None), "generation_config", None),
+        ]:
+            if target is None or not hasattr(target, "max_length"):
+                continue
+            try:
+                target.max_length = None
+            except Exception:
+                pass
+
     def generate(self, prompt: str, max_new_tokens: int = 384) -> Dict[str, str]:
         self._load_model()
 
@@ -126,6 +139,7 @@ class MedGemmaService:
             }
 
         try:
+            self._clear_max_length_config()
             messages = [
                 {
                     "role": "user",
