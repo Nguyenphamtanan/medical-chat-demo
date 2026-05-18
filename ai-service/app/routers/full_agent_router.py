@@ -14,6 +14,10 @@ def get_full_agent_service() -> FullAgentService:
     return FullAgentService()
 
 
-@router.post("/full-agent", response_model=FullAgentResponse)
+@router.post(
+    "/full-agent",
+    response_model=FullAgentResponse,
+    summary="Deep analysis mode; not intended for realtime chat.",
+)
 def analyze_full_agent(data: AdvancedCaseRequest):
     return get_full_agent_service().analyze(data)

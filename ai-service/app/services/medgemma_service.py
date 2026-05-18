@@ -115,7 +115,7 @@ class MedGemmaService:
 
         return str(outputs).strip()
 
-    def generate(self, prompt: str) -> Dict[str, str]:
+    def generate(self, prompt: str, max_new_tokens: int = 384) -> Dict[str, str]:
         self._load_model()
 
         if self.pipe is None:
@@ -141,7 +141,7 @@ class MedGemmaService:
             print("[MEDGEMMA] Calling real model...")
             outputs = self.pipe(
                 messages,
-                max_new_tokens=384,
+                max_new_tokens=max_new_tokens,
                 do_sample=False,
             )
 

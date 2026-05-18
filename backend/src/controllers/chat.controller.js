@@ -1,27 +1,27 @@
 import axios from "axios";
+import mongoose from "mongoose";
 import ChatMessage from "../models/ChatMessage.js";
+import Conversation from "../models/Conversation.js";
+import Message from "../models/Message.js";
 
 const MEDICAL_DISCLAIMER =
-  "This assistant is for educational triage support only and does not replace a licensed clinician. Seek urgent care for severe or worsening symptoms.";
+  "Thông tin chỉ mang tính tham khảo, không thay thế bác sĩ. Nếu có dấu hiệu nặng hoặc triệu chứng xấu đi, hãy đi khám hoặc cấp cứu.";
 
-const SAFE_RESPONSE_KEYS = {
-  summary: "",
-  possible_related_systems: [],
-  possible_explanations: [],
-  red_flags: [],
-  missing_questions: [],
-  recommendation: "",
-  severity: "unknown",
-  model_status: "unknown",
-  disclaimer: MEDICAL_DISCLAIMER,
-};
+const FAST_TIMEOUT_MS = 90 * 1000;
+const FULL_TIMEOUT_MS = 180 * 1000;
+const HISTORY_LIMIT = 8;
 
 const getAiConfig = () => {
-  const mode = (process.env.AI_MODE || "stub").toLowerCase();
+  const directUrl = (process.env.AI_SERVICE_URL || "").replace(/\/$/, "");
 
-  if (!["stub", "local", "colab"].includes(mode)) {
-    return { mode: "stub", url: null };
+  if (directUrl) {
+    return {
+      mode: "service",
+      url: directUrl,
+    };
   }
+
+  const mode = (process.env.AI_MODE || "stub").toLowerCase();
 
   if (mode === "local") {
     return {
@@ -40,127 +40,261 @@ const getAiConfig = () => {
   return { mode: "stub", url: null };
 };
 
-const makeStubMedicalResponse = (symptoms) => ({
-  summary: `You reported: ${symptoms}`,
-  possible_related_systems: ["general", "respiratory", "gastrointestinal"],
-  possible_explanations: [
-    "A mild self-limited illness can cause overlapping symptoms.",
-    "Infection, inflammation, stress, dehydration, or medication effects may contribute.",
-  ],
-  red_flags: [
-    "Chest pain, severe shortness of breath, fainting, confusion, blue lips, or severe weakness.",
-    "High fever that persists, severe dehydration, severe abdominal pain, or symptoms that rapidly worsen.",
-  ],
-  missing_questions: [
-    "How long have the symptoms been present?",
-    "What is your age and do you have pregnancy, chronic disease, or immune suppression?",
-    "Do you have fever, pain severity, breathing trouble, vomiting, bleeding, or new medications?",
-  ],
-  recommendation:
-    "Monitor symptoms, rest, hydrate if appropriate, and contact a healthcare professional if symptoms persist, worsen, or concern you. Seek emergency care immediately for any red flags.",
-  severity: "low_to_moderate",
-  model_status: "stub_response_no_medgemma_called",
-  disclaimer: MEDICAL_DISCLAIMER,
-});
-
-const normalizeMedicalResponse = (payload, fallbackStatus) => {
-  const source = payload?.data && typeof payload.data === "object" ? payload.data : payload;
-  const normalized = { ...SAFE_RESPONSE_KEYS };
-
-  for (const key of Object.keys(normalized)) {
-    if (source?.[key] !== undefined) {
-      normalized[key] = source[key];
-    }
-  }
-
-  normalized.possible_related_systems = Array.isArray(normalized.possible_related_systems)
-    ? normalized.possible_related_systems
-    : [];
-  normalized.possible_explanations = Array.isArray(normalized.possible_explanations)
-    ? normalized.possible_explanations
-    : [];
-  normalized.red_flags = Array.isArray(normalized.red_flags) ? normalized.red_flags : [];
-  normalized.missing_questions = Array.isArray(normalized.missing_questions)
-    ? normalized.missing_questions
-    : [];
-  normalized.disclaimer = normalized.disclaimer || MEDICAL_DISCLAIMER;
-  normalized.model_status = normalized.model_status || fallbackStatus || "unknown";
-
-  return normalized;
+const makeTitle = (message) => {
+  const clean = message.replace(/\s+/g, " ").trim();
+  return clean.length > 60 ? `${clean.slice(0, 57)}...` : clean || "New medical chat";
 };
 
-export const askMedicalAgent = async (req, res) => {
-  try {
-    const { symptoms } = req.body;
+const validateChatBody = (body) => {
+  const message = body?.message;
+  const mode = body?.mode || "fast";
 
-    if (!symptoms || !symptoms.trim()) {
+  if (typeof message !== "string") {
+    return { error: "message is required and must be a string." };
+  }
+
+  const trimmedMessage = message.trim();
+
+  if (!trimmedMessage) {
+    return { error: "message must not be empty." };
+  }
+
+  if (trimmedMessage.length > 3000) {
+    return { error: "message must be 3000 characters or fewer." };
+  }
+
+  if (!["fast", "full"].includes(mode)) {
+    return { error: 'mode must be either "fast" or "full".' };
+  }
+
+  return {
+    value: {
+      conversationId: body?.conversationId,
+      message: trimmedMessage,
+      mode,
+    },
+  };
+};
+
+const normalizeFastAiResponse = (payload, fallbackStatus) => {
+  const source = payload?.data && typeof payload.data === "object" ? payload.data : payload;
+  const answer =
+    source?.answer ||
+    source?.summary ||
+    source?.recommendation ||
+    "Mình chưa tạo được câu trả lời rõ ràng. Bạn có thể mô tả thêm triệu chứng, thời gian xuất hiện và mức độ nặng không?";
+
+  return {
+    content: answer,
+    metadata: {
+      mode: "fast",
+      modelStatus: source?.model_status || source?.modelStatus || fallbackStatus || "unknown",
+      aiRaw: source || null,
+    },
+  };
+};
+
+const normalizeFullAiResponse = (payload, fallbackStatus) => {
+  const source = payload?.data && typeof payload.data === "object" ? payload.data : payload;
+  const content =
+    source?.safe_summary ||
+    source?.answer ||
+    "Deep analysis mode completed, but the AI service did not return a summary.";
+
+  return {
+    content: `[Phân tích chuyên sâu] ${content}`,
+    metadata: {
+      mode: "full",
+      modelStatus: source?.medgemma_status || source?.model_status || fallbackStatus || "unknown",
+      aiRaw: source || null,
+    },
+  };
+};
+
+const makeStubChatResponse = (message, mode) => ({
+  content:
+    mode === "full"
+      ? `[Phân tích chuyên sâu] Stub mode đang bật, chưa gọi full-agent. Nội dung người dùng: ${message}`
+      : `Mình ghi nhận: ${message}. Hãy đi khám/cấp cứu nếu có khó thở, đau ngực, lơ mơ, ngất, sốt cao kéo dài hoặc triệu chứng xấu đi nhanh.`,
+  metadata: {
+    mode,
+    modelStatus: "stub_response_no_ai_service_called",
+    aiRaw: {
+      disclaimer: MEDICAL_DISCLAIMER,
+    },
+  },
+});
+
+const getOrCreateConversation = async ({ conversationId, userId, message }) => {
+  if (conversationId) {
+    if (!mongoose.Types.ObjectId.isValid(conversationId)) {
+      const error = new Error("conversationId is invalid.");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const existingConversation = await Conversation.findOne({
+      _id: conversationId,
+      userId,
+    });
+
+    if (!existingConversation) {
+      const error = new Error("Conversation not found.");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    return existingConversation;
+  }
+
+  return Conversation.create({
+    userId,
+    title: makeTitle(message),
+  });
+};
+
+const buildHistory = async (conversationId) => {
+  const recentMessages = await Message.find({ conversationId })
+    .sort({ createdAt: -1 })
+    .limit(HISTORY_LIMIT)
+    .lean();
+
+  return recentMessages
+    .reverse()
+    .map((item) => ({
+      role: item.role,
+      content: item.content,
+    }));
+};
+
+const callAiService = async ({ aiConfig, message, mode, history }) => {
+  if (aiConfig.mode === "stub") {
+    return makeStubChatResponse(message, mode);
+  }
+
+  if (!aiConfig.url) {
+    const error = new Error("AI_SERVICE_URL or COLAB_AI_URL is required.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (mode === "full") {
+    const aiResult = await axios.post(
+      `${aiConfig.url}/ai/full-agent`,
+      {
+        symptoms: [message],
+        history: history.map((item) => `${item.role}: ${item.content}`),
+        query: message,
+      },
+      { timeout: FULL_TIMEOUT_MS }
+    );
+
+    return normalizeFullAiResponse(aiResult.data, `${aiConfig.mode}_full_agent_response`);
+  }
+
+  const aiResult = await axios.post(
+    `${aiConfig.url}/ai/chat`,
+    {
+      message,
+      history,
+    },
+    { timeout: FAST_TIMEOUT_MS }
+  );
+
+  return normalizeFastAiResponse(aiResult.data, `${aiConfig.mode}_fast_chat_response`);
+};
+
+export const createChatMessage = async (req, res) => {
+  try {
+    const validation = validateChatBody(req.body);
+
+    if (validation.error) {
       return res.status(400).json({
-        message: "Please enter symptoms before asking the assistant.",
+        message: validation.error,
       });
     }
 
-    const trimmedSymptoms = symptoms.trim();
-    const aiConfig = getAiConfig();
-    let aiResponse;
-
-    if (aiConfig.mode === "stub") {
-      aiResponse = makeStubMedicalResponse(trimmedSymptoms);
-    } else {
-      if (!aiConfig.url) {
-        return res.status(400).json({
-          message: "COLAB_AI_URL is required when AI_MODE=colab.",
-        });
-      }
-
-      const aiResult = await axios.post(
-        `${aiConfig.url}/ai/analyze`,
-        { symptoms: trimmedSymptoms },
-        { timeout: 600000 }
-      );
-
-      aiResponse = normalizeMedicalResponse(
-        aiResult.data,
-        `${aiConfig.mode}_ai_service_response`
-      );
-    }
-
-    const savedMessage = await ChatMessage.create({
+    const { conversationId, message, mode } = validation.value;
+    const conversation = await getOrCreateConversation({
+      conversationId,
       userId: req.user._id,
-      question: trimmedSymptoms,
-      patientInput: {
-        symptoms: trimmedSymptoms,
-      },
-      aiResponse,
-      aiMode: aiConfig.mode,
-      modelStatus: aiResponse.model_status,
-      serviceUrl: aiConfig.url,
+      message,
     });
 
+    await Message.create({
+      conversationId: conversation._id,
+      userId: req.user._id,
+      role: "user",
+      content: message,
+      metadata: { mode },
+    });
+
+    const history = await buildHistory(conversation._id);
+    const aiConfig = getAiConfig();
+    const assistantResponse = await callAiService({
+      aiConfig,
+      message,
+      mode,
+      history,
+    });
+
+    const savedAssistantMessage = await Message.create({
+      conversationId: conversation._id,
+      userId: req.user._id,
+      role: "assistant",
+      content: assistantResponse.content,
+      metadata: assistantResponse.metadata,
+    });
+
+    conversation.updatedAt = new Date();
+    await conversation.save();
+
     return res.json({
-      message: "AI response received.",
-      data: {
-        chat: savedMessage,
-        aiResponse,
+      conversationId: conversation._id.toString(),
+      message: {
+        role: savedAssistantMessage.role,
+        content: savedAssistantMessage.content,
+        metadata: savedAssistantMessage.metadata,
       },
     });
   } catch (error) {
-    console.error("AI ERROR:", error.response?.data || error.message);
+    console.error("CHAT AI ERROR:", error.response?.data || error.message);
 
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       message: "Error calling AI service.",
       error: error.response?.data || error.message,
     });
   }
 };
 
+export const askMedicalAgent = async (req, res) => {
+  req.body = {
+    conversationId: req.body?.conversationId,
+    message: req.body?.message || req.body?.symptoms,
+    mode: req.body?.mode || "fast",
+  };
+
+  return createChatMessage(req, res);
+};
+
 export const getChatHistory = async (req, res) => {
   try {
-    const history = await ChatMessage.find({
+    const conversations = await Conversation.find({
+      userId: req.user._id,
+    }).sort({ updatedAt: -1 });
+
+    if (conversations.length > 0) {
+      return res.json({
+        data: conversations,
+      });
+    }
+
+    const legacyHistory = await ChatMessage.find({
       userId: req.user._id,
     }).sort({ createdAt: -1 });
 
     return res.json({
-      data: history,
+      data: legacyHistory,
     });
   } catch (error) {
     return res.status(500).json({
@@ -172,6 +306,27 @@ export const getChatHistory = async (req, res) => {
 
 export const getChatDetail = async (req, res) => {
   try {
+    if (mongoose.Types.ObjectId.isValid(req.params.id)) {
+      const conversation = await Conversation.findOne({
+        _id: req.params.id,
+        userId: req.user._id,
+      });
+
+      if (conversation) {
+        const messages = await Message.find({
+          conversationId: conversation._id,
+          userId: req.user._id,
+        }).sort({ createdAt: 1 });
+
+        return res.json({
+          data: {
+            conversation,
+            messages,
+          },
+        });
+      }
+    }
+
     const chat = await ChatMessage.findOne({
       _id: req.params.id,
       userId: req.user._id,

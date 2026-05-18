@@ -113,7 +113,7 @@ export const analyzeAdvancedCase = async (payload) => {
   }
 
   const aiResult = await axios.post(`${aiConfig.url}/ai/full-agent`, payload, {
-    timeout: 600000,
+    timeout: 180000,
   });
 
   return {

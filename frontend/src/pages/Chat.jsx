@@ -2,9 +2,11 @@ import { useState } from "react";
 import axiosClient from "../api/axiosClient";
 
 const RESPONSE_SECTIONS = [
+  ["red_flags", "Red flags"],
+  ["missing_data", "Missing data"],
+  ["likely_systems", "Likely systems"],
   ["possible_related_systems", "Possible related systems"],
   ["possible_explanations", "Possible explanations"],
-  ["red_flags", "Red flags"],
   ["missing_questions", "Missing questions"],
 ];
 
@@ -38,29 +40,31 @@ function MedicalResponse({ data }) {
     return <p>No response data returned.</p>;
   }
 
-  const modelStatusLabel = getModelStatusLabel(data.model_status);
+  const raw = data.metadata?.aiRaw || data;
+  const modelStatusLabel = getModelStatusLabel(raw.model_status || data.metadata?.modelStatus);
 
   return (
     <article className="medical-response">
       <div className="response-meta">
-        <span>Severity: {data.severity || "unknown"}</span>
+        {raw.severity && <span>Severity: {raw.severity}</span>}
+        {data.metadata?.mode && <span>Mode: {data.metadata.mode}</span>}
         {modelStatusLabel && <span>{modelStatusLabel}</span>}
       </div>
 
-      <p className="summary">{data.summary}</p>
+      <p className="summary">{data.content || raw.answer || raw.summary}</p>
 
       {RESPONSE_SECTIONS.map(([key, title]) => (
-        <ListSection key={key} title={title} items={data[key]} />
+        <ListSection key={key} title={title} items={raw[key]} />
       ))}
 
-      {data.recommendation && (
+      {(raw.recommendation || raw.confidence_note) && (
         <section className="medical-section">
           <h4>Recommendation</h4>
-          <p>{data.recommendation}</p>
+          <p>{raw.recommendation || raw.confidence_note}</p>
         </section>
       )}
 
-      {data.disclaimer && <p className="disclaimer">{data.disclaimer}</p>}
+      {raw.disclaimer && <p className="disclaimer">{raw.disclaimer}</p>}
     </article>
   );
 }
@@ -68,6 +72,7 @@ function MedicalResponse({ data }) {
 export default function Chat() {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState([]);
+  const [conversationId, setConversationId] = useState(null);
   const [loading, setLoading] = useState(false);
 
   const handleSend = async () => {
@@ -84,13 +89,19 @@ export default function Chat() {
     setLoading(true);
 
     try {
-      const res = await axiosClient.post("/chat/ask", {
-        symptoms,
+      const res = await axiosClient.post("/chat", {
+        conversationId,
+        message: symptoms,
+        mode: "fast",
       });
+
+      if (res.data.conversationId) {
+        setConversationId(res.data.conversationId);
+      }
 
       const aiMessage = {
         role: "assistant",
-        data: res.data.data?.aiResponse,
+        data: res.data.message,
       };
 
       setMessages((prev) => [...prev, aiMessage]);

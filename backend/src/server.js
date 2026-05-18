@@ -27,6 +27,10 @@ app.use("/api/advanced-case", advancedCaseRoutes);
 
 const PORT = process.env.PORT || 5000;
 
+console.log("AI_MODE =", process.env.AI_MODE);
+console.log("COLAB_AI_URL =", process.env.COLAB_AI_URL);
+console.log("LOCAL_AI_URL =", process.env.LOCAL_AI_URL);
+
 app.listen(PORT, () => {
   console.log(`Backend running on port ${PORT}`);
 });
