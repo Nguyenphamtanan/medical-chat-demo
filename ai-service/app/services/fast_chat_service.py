@@ -54,6 +54,10 @@ CASE_TYPES = {
     },
 }
 
+CASE_TYPES["cardiorespiratory"]["keywords"].extend(
+    ["chest pain", "chest tightness", "shortness of breath", "dyspnea"]
+)
+
 HEADING_ALIASES = {
     "summary": ("TOM TAT",),
     "systems": ("HE CO QUAN", "HE CO QUAN LIEN QUAN"),
@@ -98,6 +102,73 @@ def _contains_any(text: str, keywords: List[str]) -> bool:
     return False
 
 
+NEGATION_TERMS = {
+    "KHONG",
+    "KO",
+    "K",
+    "CHUA",
+    "KHONG CO",
+    "KHONG BI",
+    "KHONG THAY",
+    "KHONG HE",
+    "KHONG CON",
+    "KHG",
+    "KHG CO",
+    "NO",
+    "NOT",
+    "WITHOUT",
+    "DENIES",
+    "DENY",
+}
+
+
+def _tokens(text: str) -> List[str]:
+    searchable = _searchable(text)
+    return searchable.split() if searchable else []
+
+
+def _keyword_token_spans(tokens: List[str], keyword_tokens: List[str]) -> List[int]:
+    if not tokens or not keyword_tokens or len(keyword_tokens) > len(tokens):
+        return []
+    starts = []
+    width = len(keyword_tokens)
+    for index in range(0, len(tokens) - width + 1):
+        if tokens[index : index + width] == keyword_tokens:
+            starts.append(index)
+    return starts
+
+
+def _has_negation_before(tokens: List[str], keyword_start: int) -> bool:
+    window_start = max(0, keyword_start - 3)
+    previous = tokens[window_start:keyword_start]
+    previous_text = " ".join(previous)
+    for term in NEGATION_TERMS:
+        term_tokens = term.split()
+        if len(term_tokens) == 1 and term in previous:
+            return True
+        if len(term_tokens) > 1 and term in previous_text:
+            return True
+    extended_previous = tokens[max(0, keyword_start - 6):keyword_start]
+    if any(link in previous for link in ["OR", "AND", "HOAC", "VA"]):
+        for term in NEGATION_TERMS:
+            if term in " ".join(extended_previous):
+                return True
+    return False
+
+
+def contains_non_negated_keyword(text: str, keyword: str) -> bool:
+    tokens = _tokens(text)
+    keyword_tokens = _tokens(keyword)
+    found_negated = False
+    for start in _keyword_token_spans(tokens, keyword_tokens):
+        if _has_negation_before(tokens, start):
+            found_negated = True
+            print(f"[FAST_CHAT] Negated keyword skipped: {keyword}")
+            continue
+        return True
+    return False if found_negated else False
+
+
 def _context_text(message: str, patient_context: Optional[Dict[str, Any]] = None) -> str:
     if not patient_context:
         return message or ""
@@ -112,11 +183,12 @@ def _context_text(message: str, patient_context: Optional[Dict[str, Any]] = None
 
 def detect_case_types(message: str, patient_context: Optional[Dict[str, Any]] = None) -> List[str]:
     text = _context_text(message, patient_context)
-    detected = [
-        case_type
-        for case_type, spec in CASE_TYPES.items()
-        if case_type != "general" and _contains_any(text, spec["keywords"])
-    ]
+    detected = []
+    for case_type, spec in CASE_TYPES.items():
+        if case_type == "general":
+            continue
+        if any(contains_non_negated_keyword(text, keyword) for keyword in spec["keywords"]):
+            detected.append(case_type)
     return detected or ["general"]
 
 
@@ -387,6 +459,16 @@ def normalize_system_names(likely_systems: List[str], case_types: List[str]) -> 
 
     _append_unique(normalized, _taxonomy_values(case_types, "systems"))
     normalized = _filter_relevant_systems(normalized, case_types)
+    if "upper_respiratory" not in case_types:
+        normalized = [
+            item
+            for item in normalized
+            if _searchable(item) not in ["HO HAP TAI MUI HONG", "TAI MUI HONG"]
+        ]
+    if "upper_respiratory" not in case_types and "cardiorespiratory" not in case_types:
+        normalized = [item for item in normalized if _searchable(item) != "HO HAP"]
+    if "cardiorespiratory" not in case_types and "neuro_emergency" not in case_types:
+        normalized = [item for item in normalized if _searchable(item) != "TIM MACH"]
     if "upper_respiratory" not in case_types:
         normalized = [item for item in normalized if item not in ["hô hấp / tai mũi họng", "tai mũi họng"]]
     return [item for item in normalized if item in allowed and len(item) <= 24]
