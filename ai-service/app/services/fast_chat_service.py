@@ -297,6 +297,149 @@ def repair_response_if_needed(parsed: Dict[str, Any], case_types: List[str], mes
     return repaired
 
 
+def _generic_vietnamese_answer(case_types: List[str]) -> str:
+    if "hepatobiliary" in case_types:
+        return (
+            "Triệu chứng vàng da kèm buồn nôn/chóng mặt có thể liên quan gan mật hoặc hệ tiêu hóa. "
+            "Bạn nên đi khám để kiểm tra chức năng gan mật và các dấu hiệu toàn thân."
+        )
+    if "upper_respiratory" in case_types:
+        return "Ho/rát cổ trong vài ngày thường liên quan đường hô hấp trên hoặc tai mũi họng."
+    if "cardiorespiratory" in case_types:
+        return "Khó thở hoặc đau ngực có thể liên quan tim mạch hoặc hô hấp."
+    if "renal" in case_types:
+        return "Tiểu ít hoặc bất thường creatinine/eGFR/kali có thể liên quan chức năng thận."
+    if "neuro_emergency" in case_types:
+        return "Méo miệng, nói khó hoặc yếu liệt đột ngột là dấu hiệu thần kinh nguy hiểm."
+    return _neutral_answer(case_types)
+
+
+def normalize_text_output(text: str) -> str:
+    normalized = str(text or "")
+    replacements = [
+        (r"\bJaundice\b", "Vàng da"),
+        (r"\byellow skin\b", "da vàng"),
+        (r"\bliver\b", "gan"),
+        (r"\bbile ducts?\b", "đường mật"),
+        (r"\bdigestive system\b", "hệ tiêu hóa"),
+        (r"\bdizziness\b", "chóng mặt"),
+        (r"\bnausea\b", "buồn nôn"),
+        (r"\brespiratory system\b", "hệ hô hấp"),
+    ]
+    for pattern, replacement in replacements:
+        normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"```(?:json)?", "", normalized, flags=re.IGNORECASE)
+    normalized = normalized.replace("```", "").replace("**", "")
+    normalized = re.sub(r"<unused\d+>\s*thought", "", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"<unused\d+>", "", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    normalized = re.sub(r"\s*\([^)]{0,30}$", "", normalized).strip()
+    normalized = re.sub(
+        r"\bincluding the digestive system\s*\([^)]*$",
+        "",
+        normalized,
+        flags=re.IGNORECASE,
+    ).strip()
+    if len(normalized) > 500:
+        truncated = normalized[:500].rstrip()
+        last_stop = max(truncated.rfind("."), truncated.rfind("!"), truncated.rfind("?"))
+        normalized = truncated[: last_stop + 1].strip() if last_stop > 120 else truncated
+    return normalized
+
+
+def _english_signal_too_high(text: str) -> bool:
+    clean = normalize_text_output(text)
+    english_words = re.findall(r"\b[a-zA-Z]{3,}\b", clean)
+    return len(english_words) >= 8 or bool(
+        re.search(r"\b(is|are|primarily|related|including|system|ducts|skin)\b", clean, flags=re.IGNORECASE)
+    )
+
+
+def normalize_system_names(likely_systems: List[str], case_types: List[str]) -> List[str]:
+    allowed = ["hô hấp", "tai mũi họng", "tim mạch", "thận", "gan mật", "tiêu hóa", "thần kinh", "tai trong"]
+    normalized: List[str] = []
+
+    def add(values: List[str]) -> None:
+        _append_unique(normalized, [value for value in values if value in allowed])
+
+    for item in likely_systems or []:
+        clean = normalize_text_output(item)
+        key = _searchable(clean)
+        if clean in allowed:
+            add([clean])
+        if _contains_any(clean, ["jaundice", "vàng da", "yellow skin", "liver", "gan", "bile duct", "bilirubin", "đường mật"]):
+            add(["gan mật"])
+        if _contains_any(clean, ["digestive system", "hệ tiêu hóa", "nausea", "buồn nôn", "nôn", "đau bụng"]):
+            add(["tiêu hóa"])
+        if _contains_any(clean, ["respiratory system", "hệ hô hấp", "sore throat", "throat", "larynx", "cough", "ho", "rát cổ", "đau họng"]):
+            add(["hô hấp", "tai mũi họng"])
+        if _contains_any(clean, ["dyspnea", "khó thở"]):
+            add(["hô hấp", "tim mạch"])
+        if _contains_any(clean, ["chest pain", "chest tightness", "đau ngực", "tức ngực", "bnp", "orthopnea"]):
+            add(["tim mạch", "hô hấp"])
+        if _contains_any(clean, ["kidney", "renal", "creatinine", "egfr", "potassium", "kali", "tiểu ít"]):
+            add(["thận"])
+        if _contains_any(clean, ["stroke", "seizure", "méo miệng", "yếu liệt", "nói khó", "lú lẫn"]):
+            add(["thần kinh"])
+        for label in allowed:
+            if key == _searchable(label):
+                add([label])
+
+    _append_unique(normalized, _taxonomy_values(case_types, "systems"))
+    normalized = _filter_relevant_systems(normalized, case_types)
+    if "upper_respiratory" not in case_types:
+        normalized = [item for item in normalized if item not in ["hô hấp / tai mũi họng", "tai mũi họng"]]
+    return [item for item in normalized if item in allowed and len(item) <= 24]
+
+
+def normalize_red_flags(red_flags: List[str], case_types: List[str]) -> List[str]:
+    allowed_by_case = {
+        "hepatobiliary": ["vàng da tăng nhanh", "đau bụng dữ dội", "sốt", "lơ mơ", "nôn nhiều", "nước tiểu sẫm màu"],
+        "upper_respiratory": ["khó thở", "sốt cao", "nuốt khó", "ho ra máu", "đau ngực"],
+        "renal": ["tiểu ít", "tăng kali máu", "phù", "hồi hộp", "yếu liệt"],
+        "neuro_emergency": ["méo miệng", "yếu liệt", "nói khó", "lú lẫn"],
+        "cardiorespiratory": ["khó thở khi nghỉ", "đau ngực", "tím môi", "ngất", "phù tăng nhanh", "SpO2 thấp"],
+        "gastrointestinal": ["đau bụng dữ dội", "nôn liên tục", "phân đen", "nôn ra máu", "sốt cao", "mất nước"],
+        "general": ["triệu chứng nặng dần", "ngất", "khó thở", "đau ngực", "lú lẫn"],
+    }
+    normalized: List[str] = []
+    if "hepatobiliary" in case_types:
+        _append_unique(normalized, allowed_by_case["hepatobiliary"])
+        extra_cases = [
+            case_type
+            for case_type in case_types
+            if case_type not in ["hepatobiliary", "gastrointestinal", "upper_respiratory"]
+        ]
+        for case_type in extra_cases:
+            _append_unique(normalized, allowed_by_case.get(case_type, []))
+        return [item for item in normalized if item and len(item) <= 80]
+
+    for case_type in case_types:
+        _append_unique(normalized, allowed_by_case.get(case_type, []))
+    return [item for item in normalized if item and len(item) <= 80]
+
+
+def validate_final_response(parsed: Dict[str, Any], case_types: List[str]) -> Dict[str, Any]:
+    final = {
+        **parsed,
+        "answer": normalize_text_output(parsed.get("answer", "")),
+        "likely_systems": normalize_system_names(parsed.get("likely_systems", []), case_types),
+        "red_flags": normalize_red_flags(parsed.get("red_flags", []), case_types),
+        "missing_data": [
+            normalize_text_output(item)[:120]
+            for item in parsed.get("missing_data", [])
+            if normalize_text_output(item)
+        ],
+        "disclaimer": DISCLAIMER,
+    }
+    if _english_signal_too_high(final["answer"]) or not final["answer"] or re.search(r"\([^)]{0,30}$", final["answer"]):
+        final["answer"] = _generic_vietnamese_answer(case_types)
+        if "final_normalized" not in final.get("model_status", ""):
+            final["model_status"] = f"{final.get('model_status', 'unknown')}_final_normalized"
+    final["answer"] = final["answer"].replace("**", "").replace("```", "").strip()
+    return final
+
+
 def parse_fast_chat_text(
     text: str,
     model_status: str = "medgemma_fast_text_parsed",
@@ -382,7 +525,8 @@ def _local_unavailable_response(message: str, case_types: List[str], model_statu
         "model_status": model_status,
         "disclaimer": DISCLAIMER,
     }
-    return repair_response_if_needed(parsed, case_types, message)
+    repaired = repair_response_if_needed(parsed, case_types, message)
+    return validate_final_response(repaired, case_types)
 
 
 class FastChatService:
@@ -421,6 +565,7 @@ class FastChatService:
         parsed = repair_response_if_needed(parsed, case_types, clean_message)
         if parsed["model_status"] != "medgemma_fast_text_fallback" and "domain_repaired" not in parsed["model_status"]:
             parsed["model_status"] = "medgemma_fast_text_parsed"
+        parsed = validate_final_response(parsed, case_types)
 
         print("========== PARSED FAST CHAT OUTPUT ==========")
         print(parsed)
