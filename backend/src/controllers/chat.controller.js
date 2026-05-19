@@ -89,6 +89,10 @@ const normalizeFastAiResponse = (payload, fallbackStatus) => {
     metadata: {
       mode: "fast",
       modelStatus: source?.model_status || source?.modelStatus || fallbackStatus || "unknown",
+      red_flags: Array.isArray(source?.red_flags) ? source.red_flags : [],
+      missing_data: Array.isArray(source?.missing_data) ? source.missing_data : [],
+      likely_systems: Array.isArray(source?.likely_systems) ? source.likely_systems : [],
+      disclaimer: source?.disclaimer || MEDICAL_DISCLAIMER,
       aiRaw: source || null,
     },
   };
@@ -106,6 +110,12 @@ const normalizeFullAiResponse = (payload, fallbackStatus) => {
     metadata: {
       mode: "full",
       modelStatus: source?.medgemma_status || source?.model_status || fallbackStatus || "unknown",
+      red_flags: source?.reflection?.warnings || [],
+      missing_data: source?.reflection?.missing_data || [],
+      likely_systems: Array.isArray(source?.selected_specialties)
+        ? source.selected_specialties
+        : [],
+      disclaimer: source?.disclaimer || MEDICAL_DISCLAIMER,
       aiRaw: source || null,
     },
   };
@@ -119,6 +129,10 @@ const makeStubChatResponse = (message, mode) => ({
   metadata: {
     mode,
     modelStatus: "stub_response_no_ai_service_called",
+    red_flags: [],
+    missing_data: [],
+    likely_systems: [],
+    disclaimer: MEDICAL_DISCLAIMER,
     aiRaw: {
       disclaimer: MEDICAL_DISCLAIMER,
     },
@@ -242,7 +256,7 @@ export const createChatMessage = async (req, res) => {
       conversationId: conversation._id,
       userId: req.user._id,
       role: "assistant",
-      content: assistantResponse.content,
+      content: assistantResponse.content?.trim() || "The assistant could not generate a response.",
       metadata: assistantResponse.metadata,
     });
 
@@ -281,14 +295,49 @@ export const getChatHistory = async (req, res) => {
   try {
     const conversations = await Conversation.find({
       userId: req.user._id,
-    }).sort({ updatedAt: -1 });
+    })
+      .sort({ updatedAt: -1 })
+      .limit(20)
+      .lean();
 
     if (conversations.length > 0) {
+      const conversationIds = conversations.map((conversation) => conversation._id);
+      const messages = await Message.find({
+        conversationId: { $in: conversationIds },
+        userId: req.user._id,
+      })
+        .sort({ createdAt: 1 })
+        .lean();
+
+      const messagesByConversation = messages.reduce((acc, message) => {
+        const key = message.conversationId.toString();
+        if (!acc[key]) {
+          acc[key] = [];
+        }
+
+        acc[key].push({
+          _id: message._id,
+          role: message.role,
+          content: message.content,
+          metadata: message.metadata || {},
+          createdAt: message.createdAt,
+        });
+
+        return acc;
+      }, {});
+
       return res.json({
-        data: conversations,
+        data: conversations.map((conversation) => ({
+          _id: conversation._id,
+          title: conversation.title,
+          createdAt: conversation.createdAt,
+          updatedAt: conversation.updatedAt,
+          messages: messagesByConversation[conversation._id.toString()] || [],
+        })),
       });
     }
 
+    // Legacy fallback only: old demos stored one combined document in chatmessages.
     const legacyHistory = await ChatMessage.find({
       userId: req.user._id,
     }).sort({ createdAt: -1 });

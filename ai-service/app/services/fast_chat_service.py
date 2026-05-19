@@ -518,6 +518,16 @@ def validate_final_response(parsed: Dict[str, Any], case_types: List[str]) -> Di
         final["answer"] = _generic_vietnamese_answer(case_types)
         if "final_normalized" not in final.get("model_status", ""):
             final["model_status"] = f"{final.get('model_status', 'unknown')}_final_normalized"
+    internal_note = re.search(
+        r"không tách|fallback used|cleaned response|parser|làm sạch từ medgemma",
+        final.get("confidence_note", ""),
+        flags=re.IGNORECASE,
+    )
+    if "fallback" in final.get("model_status", ""):
+        final["confidence_note"] = "Phản hồi đã được chuẩn hóa từ MedGemma."
+        final["model_status"] = "medgemma_fast_text_fallback_final_normalized"
+    elif internal_note:
+        final["confidence_note"] = ""
     final["answer"] = final["answer"].replace("**", "").replace("```", "").strip()
     return final
 
@@ -539,7 +549,7 @@ def parse_fast_chat_text(
         "red_flags": _lines_to_items(sections.get("red_flags", [])) if found_any_section else [],
         "missing_data": _lines_to_items(sections.get("missing_data", [])) if found_any_section else [],
         "likely_systems": _lines_to_items(sections.get("systems", [])) if found_any_section else [],
-        "confidence_note": _section_text(sections.get("note", [])) if found_any_section else "Không tách được đầy đủ cấu trúc, hiển thị phản hồi đã làm sạch từ MedGemma.",
+        "confidence_note": _section_text(sections.get("note", [])) if found_any_section else "",
         "model_status": model_status if found_any_section else "medgemma_fast_text_fallback",
         "disclaimer": DISCLAIMER,
     }

@@ -57,10 +57,10 @@ function MedicalResponse({ data }) {
         <ListSection key={key} title={title} items={raw[key]} />
       ))}
 
-      {(raw.recommendation || raw.confidence_note) && (
+      {raw.recommendation && (
         <section className="medical-section">
           <h4>Recommendation</h4>
-          <p>{raw.recommendation || raw.confidence_note}</p>
+          <p>{raw.recommendation}</p>
         </section>
       )}
 
